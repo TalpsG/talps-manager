@@ -1,13 +1,13 @@
 use crate::manager::ManagerStatus::{Running, Shutdown, Stopped};
 use crate::spmc_queue::SPMCQueue;
-use crate::task::Task;
+use crate::task::{Status, Task};
 use anyhow::{anyhow, Result};
 use std::cmp::PartialEq;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::Deref;
 use std::path::Path;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, RwLock};
 use std::{fs, sync::Arc, thread};
 use tracing::info;
@@ -22,7 +22,7 @@ enum ManagerStatus {
 
 #[derive(Debug)]
 pub struct TaskManager {
-    task_id: AtomicU32,
+    task_id: AtomicUsize,
     // wait when stopped
     condvar: Arc<Condvar>,
     status: Arc<Mutex<ManagerStatus>>,
@@ -108,10 +108,10 @@ impl TaskManager {
             condvar,
             task_map,
             threads: Mutex::new(threads),
-            task_id: AtomicU32::new(0),
+            task_id: AtomicUsize::new(0),
         }
     }
-    pub fn submit(&mut self, task: Task) -> Result<()> {
+    pub fn submit_task(&mut self, task: Task) -> Result<()> {
         let task_arc = Arc::new(RwLock::new(task));
         let status = *self.status.lock().unwrap().deref();
 
@@ -139,6 +139,19 @@ impl TaskManager {
                 "Talps-Manager is Shutdown , cannot submit task anymore"
             )),
         }
+    }
+    pub fn submit(&mut self, task_name: String, deps: Vec<usize>, exec_file: String) -> Result<()> {
+        let task = Task {
+            id: self.task_id.load(Ordering::Relaxed),
+            name: task_name,
+            depend: deps,
+            status: Status::Pending,
+            file_name: exec_file,
+            in_degree: 0,
+            next: vec![],
+            test: false,
+        };
+        self.submit_task(task)
     }
 
     fn is_ready(&self, task: &mut Task) -> Result<bool> {
@@ -283,7 +296,7 @@ mod tests {
                 next: vec![],
                 test: true,
             };
-            manager.submit(task).unwrap();
+            manager.submit_task(task).unwrap();
         }
         assert_eq!(manager.task_map.lock().unwrap().len(), n);
         assert_eq!(manager.ready_q.block_queue.lock().unwrap().len(), n);
@@ -315,7 +328,7 @@ mod tests {
                 next: vec![],
                 test: true,
             };
-            manager.submit(task).unwrap();
+            manager.submit_task(task).unwrap();
         }
         assert_eq!(manager.task_map.lock().unwrap().len(), n);
         assert_eq!(manager.ready_q.block_queue.lock().unwrap().len(), 1);
@@ -354,7 +367,7 @@ mod tests {
                 next: vec![],
                 test: true,
             };
-            manager.submit(task).unwrap();
+            manager.submit_task(task).unwrap();
         }
         manager.run().expect("Running Err");
         {
@@ -407,7 +420,7 @@ mod tests {
                 next: vec![],
                 test: true,
             };
-            manager.submit(task).unwrap();
+            manager.submit_task(task).unwrap();
         }
         manager.run().expect("Running Err");
         {

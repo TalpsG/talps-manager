@@ -1332,7 +1332,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "color-eyre",
- "crossterm 0.28.1",
+ "crossterm 0.29.0",
  "ratatui 0.29.0",
  "tracing",
  "tui-input",

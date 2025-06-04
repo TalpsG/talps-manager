@@ -7,10 +7,7 @@ pub enum Status {
 pub struct Task {
     pub id: usize,
     pub name: String,
-    pub depend: Vec<usize>,
     pub status: Status,
     pub file_name: String,
-    pub in_degree: usize,
-    pub next: Vec<usize>,
     pub test: bool,
 }

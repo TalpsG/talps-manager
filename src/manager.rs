@@ -2,14 +2,15 @@ use crate::manager::ManagerStatus::{Running, Shutdown, Stopped};
 use crate::task::{Status, Task};
 use anyhow::{Result, anyhow};
 use std::cmp::PartialEq;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, RwLock};
 use std::{fs, sync::Arc, thread};
-use tracing::info;
+use tokio::time::Instant;
+use tracing::{info, warn};
 
 #[derive(Debug, PartialEq, Copy, Clone, Default)]
 enum ManagerStatus {
@@ -29,9 +30,6 @@ pub struct TaskManager {
     ready_q: Arc<RwLock<VecDeque<Arc<RwLock<Task>>>>>,
     worker: Option<thread::JoinHandle<Result<()>>>,
 
-    // all task will be record on this map
-    task_map: Arc<RwLock<BTreeMap<usize, Arc<RwLock<Task>>>>>,
-
     // condvar
     condvar: Arc<Condvar>,
 }
@@ -45,13 +43,10 @@ impl TaskManager {
     pub fn new() -> TaskManager {
         let status = Arc::new(Mutex::new(Stopped));
         let ready_q = Arc::new(RwLock::new(VecDeque::<Arc<RwLock<Task>>>::new()));
-        let task_map: Arc<RwLock<BTreeMap<usize, Arc<RwLock<Task>>>>> =
-            Arc::new(RwLock::new(BTreeMap::new()));
         let condvar = Arc::new(Condvar::new());
 
         let t_status = status.clone();
         let t_ready_q = ready_q.clone();
-        let t_task_map = task_map.clone();
         let t_condvar = condvar.clone();
         let worker = thread::spawn(move || -> Result<()> {
             loop {
@@ -70,41 +65,41 @@ impl TaskManager {
                     }
                 }
                 // *status must be running
-                let mut q_guard = t_ready_q.write().unwrap();
-                let task_guard = q_guard.pop_front().unwrap();
-                let task = task_guard.write().unwrap();
-                info!("task {} : {} is RUNNING !", task.id, task.name);
+                let task_arc = t_ready_q.write().unwrap().front().unwrap().clone();
+                let task_value;
+                {
+                    let mut task = task_arc.write().unwrap();
+                    task.status = Status::Running;
+                    task_value = task.clone();
+                }
+                info!("task {} : {} is RUNNING !", task_value.id, task_value.name);
 
-                if task.test {
-                    TaskManager::task_test_run(&task)?;
+                if task_value.test {
+                    TaskManager::task_test_run(&task_value)?;
                 } else {
                     todo!()
                 }
-                info!("task {} : {} is DONE !", task.id, task.name);
+                info!("task {} : {} is DONE !", task_value.id, task_value.name);
 
-                let mut map = t_task_map.write().unwrap();
-                map.remove(&task.id);
+                t_ready_q.write().unwrap().pop_front();
             }
             Ok(())
         });
         TaskManager {
             status,
             ready_q,
-            task_map,
             condvar,
             worker: Some(worker),
             task_id: AtomicUsize::new(0),
         }
     }
-    pub fn submit_task(&mut self, task: Task) -> Result<()> {
-        let id = task.id;
+    pub fn submit_task(&self, task: Task) -> Result<()> {
         let task_arc = Arc::new(RwLock::new(task));
         let status = *self.status.lock().unwrap().deref();
 
         match status {
             Running | Stopped => {
                 self.ready_q.write().unwrap().push_back(task_arc.clone());
-                self.task_map.write().unwrap().insert(id, task_arc);
                 self.condvar.notify_all();
 
                 Ok(())
@@ -114,15 +109,19 @@ impl TaskManager {
             )),
         }
     }
-    pub fn submit(&mut self, task_name: String, deps: Vec<usize>, exec_file: String) -> Result<()> {
+    pub fn submit(&self, task_name: String, exec_file: String) -> Result<()> {
         let task = Task {
             id: self.task_id.load(Ordering::Relaxed),
             name: task_name,
             status: Status::Pending,
-            file_name: exec_file,
+            cmd: exec_file,
             test: false,
+            timestamp: Instant::now(),
         };
         self.submit_task(task)
+    }
+    pub fn len(&self) -> usize {
+        self.ready_q.read().unwrap().len()
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -133,6 +132,7 @@ impl TaskManager {
                 Ok(())
             }
             Stopped => {
+                self.condvar.notify_all();
                 *self.status.lock().expect("Mutex Poisoned") = Running;
                 Ok(())
             }
@@ -165,7 +165,10 @@ impl TaskManager {
             Running | Stopped => {
                 *self.status.lock().expect("Mutex Poisoned") = Shutdown;
                 match self.worker.take() {
-                    Some(worker) => worker.join().unwrap().unwrap(),
+                    Some(worker) => {
+                        self.condvar.notify_all();
+                        worker.join().unwrap().unwrap();
+                    }
                     None => panic!("JoinHandle must be some in this case"),
                 }
                 Ok(())
@@ -177,12 +180,19 @@ impl TaskManager {
         }
     }
     fn task_test_run(task: &Task) -> Result<()> {
-        let path = Path::new(&task.file_name);
+        let path = Path::new(&task.cmd);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(path, format!("{:?}", task))?;
         Ok(())
+    }
+    pub fn show_tasks(&self) -> Vec<String> {
+        let mut vec = Vec::with_capacity(self.len());
+        for task in self.ready_q.read().unwrap().iter() {
+            vec.push(format!("{:?}", task.read().unwrap()))
+        }
+        vec
     }
 }
 
@@ -247,12 +257,12 @@ mod tests {
                 id: i,
                 name: "wwt".to_string(),
                 status: Status::Pending,
-                file_name: "wwt".to_string(),
+                cmd: "wwt".to_string(),
                 test: true,
+                timestamp: Instant::now(),
             };
             manager.submit_task(task).unwrap();
         }
-        assert_eq!(manager.task_map.read().unwrap().len(), n);
         assert_eq!(manager.ready_q.read().unwrap().len(), n);
         {
             manager.stop().expect("Stop Err");
@@ -277,11 +287,16 @@ mod tests {
                 id: i,
                 name: "wwt".to_string(),
                 status: Status::Pending,
-                file_name: format!("./run_no_dep/{}", i),
+                cmd: format!("./run_test/{}", i),
                 test: true,
+                timestamp: Instant::now(),
             };
             manager.submit_task(task).unwrap();
         }
+        {
+            assert_eq!(manager.show_tasks().len(), n);
+        }
+
         manager.run().expect("Running Err");
         {
             let status = *manager.status.lock().unwrap();
@@ -289,11 +304,13 @@ mod tests {
         }
         sleep(Duration::from_secs(5));
 
-        let dir = read_dir("./run_no_dep").expect("output folder");
+        let dir = read_dir("./run_test").expect("output folder");
         assert_eq!(dir.count(), n);
-        assert_eq!(manager.task_map.read().unwrap().len(), 0);
 
-        remove_dir_all("./run_no_dep").unwrap();
+        remove_dir_all("./run_test").unwrap();
+        {
+            assert_eq!(manager.show_tasks().len(), 0);
+        }
 
         {
             manager.stop().expect("Stop Err");

@@ -1,3 +1,5 @@
+use tokio::time::Instant;
+
 #[derive(Debug, Clone)]
 pub enum Status {
     Running,
@@ -8,6 +10,7 @@ pub struct Task {
     pub id: usize,
     pub name: String,
     pub status: Status,
-    pub file_name: String,
+    pub cmd: String,
     pub test: bool,
+    pub timestamp: Instant,
 }

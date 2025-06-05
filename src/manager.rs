@@ -124,7 +124,7 @@ impl TaskManager {
         self.ready_q.read().unwrap().len()
     }
 
-    pub fn run(&mut self) -> Result<()> {
+    pub fn run(&self) -> Result<()> {
         let status = *self.status.lock().unwrap();
         match status {
             Running => {
@@ -132,6 +132,7 @@ impl TaskManager {
                 Ok(())
             }
             Stopped => {
+                info!("Talps-Manager start to run");
                 self.condvar.notify_all();
                 *self.status.lock().expect("Mutex Poisoned") = Running;
                 Ok(())

@@ -55,6 +55,12 @@ pub trait TalpsApi {
 
     #[method(name = "show_tasks")]
     async fn show_tasks(&self) -> RpcResult<Vec<String>>;
+    #[method(name = "run")]
+    async fn run(&self) -> RpcResult<String>;
+    #[method(name = "stop")]
+    async fn stop(&self) -> RpcResult<String>;
+    #[method(name = "shutdown")]
+    async fn shutdown(&self) -> RpcResult<String>;
 }
 pub struct TalpsApiImpl {
     manager: TaskManager,
@@ -84,6 +90,23 @@ impl TalpsApiServer for TalpsApiImpl {
     async fn show_tasks(&self) -> RpcResult<Vec<String>> {
         info!("rpc show tasks");
         Ok(self.manager.show_tasks())
+    }
+    async fn run(&self) -> RpcResult<String> {
+        let ret = self.manager.run();
+        match ret {
+            Ok(_) => Ok("Start to run".to_string()),
+            Err(e) => Ok(e.to_string()),
+        }
+    }
+    async fn stop(&self) -> RpcResult<String> {
+        let ret = self.manager.run();
+        match ret {
+            Ok(_) => Ok("Start to run".to_string()),
+            Err(e) => Ok(e.to_string()),
+        }
+    }
+    async fn shutdown(&self) -> RpcResult<String> {
+        todo!()
     }
 }
 

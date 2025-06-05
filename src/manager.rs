@@ -1,23 +1,22 @@
-use crate::manager::ManagerStatus::{Running, Shutdown, Stopped};
+use crate::manager::ManagerStatus::{Running, Stopped};
 use crate::task::{Status, Task};
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use std::cmp::PartialEq;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::Deref;
 use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, RwLock};
 use std::{fs, sync::Arc, thread};
-use tokio::time::Instant;
-use tracing::{info, warn};
+use tracing::{error, info};
 
 #[derive(Debug, PartialEq, Copy, Clone, Default)]
 enum ManagerStatus {
     Running,
     #[default]
     Stopped,
-    Shutdown,
 }
 
 #[derive(Debug)]
@@ -52,16 +51,10 @@ impl TaskManager {
             loop {
                 {
                     let mut status_guard = t_status.lock().unwrap();
-                    if *status_guard == Shutdown {
-                        break;
-                    }
                     while *status_guard == Stopped
                         || (*status_guard == Running && t_ready_q.read().unwrap().len() == 0)
                     {
                         status_guard = t_condvar.wait(status_guard).unwrap();
-                    }
-                    if *status_guard == Shutdown {
-                        break;
                     }
                 }
                 // *status must be running
@@ -77,13 +70,13 @@ impl TaskManager {
                 if task_value.test {
                     TaskManager::task_test_run(&task_value)?;
                 } else {
-                    todo!()
+                    // run task
+                    TaskManager::run_task(&task_value)?;
                 }
                 info!("task {} : {} is DONE !", task_value.id, task_value.name);
 
                 t_ready_q.write().unwrap().pop_front();
             }
-            Ok(())
         });
         TaskManager {
             status,
@@ -104,9 +97,6 @@ impl TaskManager {
 
                 Ok(())
             }
-            Shutdown => Err(anyhow!(
-                "Talps-Manager is Shutdown , cannot submit task anymore"
-            )),
         }
     }
     pub fn submit(&self, task_name: String, exec_file: String) -> Result<()> {
@@ -116,7 +106,7 @@ impl TaskManager {
             status: Status::Pending,
             cmd: exec_file,
             test: false,
-            timestamp: Instant::now(),
+            timestamp: std::time::SystemTime::now(),
         };
         self.submit_task(task)
     }
@@ -137,10 +127,6 @@ impl TaskManager {
                 *self.status.lock().expect("Mutex Poisoned") = Running;
                 Ok(())
             }
-            Shutdown => {
-                info!("Status is shutdown , cannot run anymore");
-                Err(anyhow!("Status is shutdown , cannot run anymore"))
-            }
         }
     }
     pub fn stop(&mut self) -> Result<()> {
@@ -154,30 +140,6 @@ impl TaskManager {
                 info!("Status has been Stopped already , no need to stop again");
                 Ok(())
             }
-            Shutdown => {
-                info!("Status is shutdown , no need to stop");
-                Err(anyhow!("Status is shutdown , no need to stop"))
-            }
-        }
-    }
-    pub fn shutdown(&mut self) -> Result<()> {
-        let status = *self.status.lock().unwrap();
-        match status {
-            Running | Stopped => {
-                *self.status.lock().expect("Mutex Poisoned") = Shutdown;
-                match self.worker.take() {
-                    Some(worker) => {
-                        self.condvar.notify_all();
-                        worker.join().unwrap().unwrap();
-                    }
-                    None => panic!("JoinHandle must be some in this case"),
-                }
-                Ok(())
-            }
-            Shutdown => {
-                info!("Status is shutdown , no need to shutdown again");
-                Err(anyhow!("Status is shutdown , no need to shutdown again"))
-            }
         }
     }
     fn task_test_run(task: &Task) -> Result<()> {
@@ -186,6 +148,40 @@ impl TaskManager {
             fs::create_dir_all(parent)?;
         }
         fs::write(path, format!("{:?}", task))?;
+        Ok(())
+    }
+    pub fn run_task(task: &Task) -> Result<()> {
+        // 如果没有output文件夹，则创建
+        // 执行task.cmd指令，将其输出到output/task.name文件中
+        info!("Running task: {:?}", task);
+        let output_path = format!("./output/{}", task.name);
+        let path = Path::new(&output_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let output = Command::new("cmd")
+        // just for windows platform to output utf8 coded content
+            .args(["/C", &format!("chcp 65001 > NUL && {}", &task.cmd)])
+            .output()
+            .expect(&format!("Failed to execute command : {}", &task.cmd));
+        if output.status.success() {
+            fs::write(
+                output_path,
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+            )?;
+            info!("Task {} executed successfully", task.name);
+        } else {
+            fs::write(
+                output_path,
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )?;
+            error!(
+                "Task {} failed to execute: {}",
+                task.name,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
         Ok(())
     }
     pub fn show_tasks(&self) -> Vec<String> {
@@ -234,16 +230,6 @@ mod tests {
                 status = *manager.status.lock().unwrap();
                 // stop after run
                 assert_eq!(status, Stopped);
-
-                manager.shutdown().expect("Shutdown Err");
-                status = *manager.status.lock().unwrap();
-                // shutdown after stop
-                assert_eq!(status, Shutdown);
-
-                manager.run().expect_err("Run after Shutdown Err");
-                status = *manager.status.lock().unwrap();
-                // run
-                assert_eq!(status, Shutdown);
             }
         }
     }
@@ -260,7 +246,7 @@ mod tests {
                 status: Status::Pending,
                 cmd: "wwt".to_string(),
                 test: true,
-                timestamp: Instant::now(),
+                timestamp: std::time::SystemTime::now(),
             };
             manager.submit_task(task).unwrap();
         }
@@ -269,11 +255,6 @@ mod tests {
             manager.stop().expect("Stop Err");
             let status = *manager.status.lock().unwrap();
             assert_eq!(status, Stopped);
-        }
-        {
-            manager.shutdown().expect("Shutdown Err");
-            let status = *manager.status.lock().unwrap();
-            assert_eq!(status, Shutdown);
         }
     }
     #[test]
@@ -290,7 +271,7 @@ mod tests {
                 status: Status::Pending,
                 cmd: format!("./run_test/{}", i),
                 test: true,
-                timestamp: Instant::now(),
+                timestamp: std::time::SystemTime::now(),
             };
             manager.submit_task(task).unwrap();
         }
@@ -317,16 +298,6 @@ mod tests {
             manager.stop().expect("Stop Err");
             let status = *manager.status.lock().unwrap();
             assert_eq!(status, Stopped);
-        }
-        {
-            manager.shutdown().expect("Shutdown Err");
-            let status = *manager.status.lock().unwrap();
-            assert_eq!(status, Shutdown);
-        }
-        {
-            manager.stop().expect_err("Stop After Shutdown");
-            let status = *manager.status.lock().unwrap();
-            assert_eq!(status, Shutdown);
         }
     }
 }

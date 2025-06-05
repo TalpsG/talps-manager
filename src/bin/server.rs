@@ -6,6 +6,11 @@ async fn main() -> Result<()> {
     log_init();
     let mut talps_server = TalpsServer::new("54321".to_string()).await?;
     talps_server.start().await?;
+
     info!("Talps server started at port 54321");
+
+    // Keep the server running indefinitely
+    tokio::signal::ctrl_c().await?;
+    info!("Server shutting down");
     Ok(())
 }

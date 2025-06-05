@@ -4,7 +4,6 @@ use std::fs::OpenOptions;
 use tracing::{error, info};
 
 use jsonrpsee::core::async_trait;
-use jsonrpsee::http_client::HttpClient;
 use jsonrpsee::server::ServerHandle;
 use jsonrpsee::{core::RpcResult, proc_macros, server::ServerBuilder};
 use tracing_subscriber::EnvFilter;
@@ -36,7 +35,7 @@ pub fn log_init() {
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open("../app.log")
+        .open("./app.log")
         .expect("Failed to create log file");
 
     tracing_subscriber::fmt()
@@ -44,6 +43,7 @@ pub fn log_init() {
         .with_ansi(false)
         .with_env_filter(EnvFilter::new("info"))
         .init();
+    info!("Logging initialized");
 }
 
 #[proc_macros::rpc(server, client)]
@@ -59,8 +59,6 @@ pub trait TalpsApi {
     async fn run(&self) -> RpcResult<String>;
     #[method(name = "stop")]
     async fn stop(&self) -> RpcResult<String>;
-    #[method(name = "shutdown")]
-    async fn shutdown(&self) -> RpcResult<String>;
 }
 pub struct TalpsApiImpl {
     manager: TaskManager,
@@ -81,7 +79,7 @@ impl TalpsApiServer for TalpsApiImpl {
             return Ok(format!(
                 "submit task {} failed : {}",
                 name,
-                ret.err().unwrap().to_string()
+                ret.err().unwrap()
             ));
         }
         Ok("submit success".to_string())
@@ -105,13 +103,59 @@ impl TalpsApiServer for TalpsApiImpl {
             Err(e) => Ok(e.to_string()),
         }
     }
-    async fn shutdown(&self) -> RpcResult<String> {
-        todo!()
+}
+
+pub struct TalpsManagerClient {
+    client: jsonrpsee::http_client::HttpClient,
+}
+
+impl TalpsManagerClient {
+    pub async fn new(port: String) -> Result<TalpsManagerClient> {
+        let client = jsonrpsee::http_client::HttpClient::builder()
+            .build(format!("http://localhost:{}", port))?;
+        Ok(TalpsManagerClient { client })
+    }
+
+    pub async fn test(&self, msg: String) -> Result<String> {
+        self.client.test(msg).await.map_err(|e| {
+            error!("RPC call failed: {}", e);
+            e.into()
+        })
+    }
+    // submit task to the manager
+    pub async fn submit_task(&self, name: String, cmd: String) -> Result<String> {
+        self.client.submit_task(name, cmd).await.map_err(|e| {
+            error!("RPC call failed: {}", e);
+            e.into()
+        })
+    }
+    // run
+    pub async fn run(&self) -> Result<String> {
+        self.client.run().await.map_err(|e| {
+            error!("RPC call failed: {}", e);
+            e.into()
+        })
+    }
+    // stop
+    pub async fn stop(&self) -> Result<String> {
+        self.client.stop().await.map_err(|e| {
+            error!("RPC call failed: {}", e);
+            e.into()
+        })
+    }
+    // show task
+    pub async fn show_tasks(&self) -> Result<Vec<String>> {
+        self.client.show_tasks().await.map_err(|e| {
+            error!("RPC call failed: {}", e);
+            e.into()
+        })
     }
 }
 
 #[tokio::test]
 async fn client_call_test() -> Result<()> {
+    use jsonrpsee::http_client::HttpClient;
+
     let mut talps_server = TalpsServer::new("54321".to_string()).await?;
     talps_server.start().await?;
 

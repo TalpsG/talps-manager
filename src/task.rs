@@ -1,5 +1,3 @@
-use tokio::time::Instant;
-
 #[derive(Debug, Clone)]
 pub enum Status {
     Running,
@@ -12,5 +10,5 @@ pub struct Task {
     pub status: Status,
     pub cmd: String,
     pub test: bool,
-    pub timestamp: Instant,
+    pub timestamp: std::time::SystemTime,
 }

@@ -1,3 +1,5 @@
+use chrono::{DateTime, Local};
+
 #[derive(Debug, Clone)]
 pub enum Status {
     Running,
@@ -10,5 +12,5 @@ pub struct Task {
     pub status: Status,
     pub cmd: String,
     pub test: bool,
-    pub timestamp: std::time::SystemTime,
+    pub timestamp: DateTime<Local>,
 }

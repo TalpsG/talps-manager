@@ -1,14 +1,18 @@
 use crate::manager::ManagerStatus::{Running, Stopped};
 use crate::task::{Status, Task};
 use anyhow::Result;
+use chrono::Local;
 use std::cmp::PartialEq;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Read, Stderr, Write}; // Ensure Write trait is in scope
 use std::ops::Deref;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, RwLock};
+use std::u64;
 use std::{fs, sync::Arc, thread};
 use tracing::{error, info};
 
@@ -106,7 +110,7 @@ impl TaskManager {
             status: Status::Pending,
             cmd: exec_file,
             test: false,
-            timestamp: std::time::SystemTime::now(),
+            timestamp: Local::now(),
         };
         self.submit_task(task)
     }
@@ -129,7 +133,7 @@ impl TaskManager {
             }
         }
     }
-    pub fn stop(&mut self) -> Result<()> {
+    pub fn stop(&self) -> Result<()> {
         let status = *self.status.lock().unwrap();
         match status {
             Running => {
@@ -159,28 +163,45 @@ impl TaskManager {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let output = Command::new("cmd")
+        let mut stdout_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(Path::new(&(output_path.clone()+"_STDOUT")))?;
+        let mut stderr_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(Path::new(&(output_path+"_ERR")))?;
+        let mut child = Command::new("cmd")
         // just for windows platform to output utf8 coded content
             .args(["/C", &format!("chcp 65001 > NUL && {}", &task.cmd)])
-            .output()
-            .expect(&format!("Failed to execute command : {}", &task.cmd));
-        if output.status.success() {
-            fs::write(
-                output_path,
-                String::from_utf8_lossy(&output.stdout).into_owned(),
-            )?;
-            info!("Task {} executed successfully", task.name);
-        } else {
-            fs::write(
-                output_path,
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            )?;
-            error!(
-                "Task {} failed to execute: {}",
-                task.name,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().expect("Failed to open stdout");
+        let stderr = child.stderr.take().expect("Failed to open stderr");
+        let stdout_thread = std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    let _ = stdout_file.write_fmt(format_args!("{}\n", line));
+                }
+            }
+        });
+        let stderr_thread = std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    let _ = stderr_file.write_fmt(format_args!("{}\n", line));
+                }
+            }
+        });
+
+        stdout_thread.join().expect("Failed to join stdout thread");
+        stderr_thread.join().expect("Failed to join stderr thread");
+        child.wait()?;
+        info!("Task {} completed successfully", task.name);
 
         Ok(())
     }
@@ -195,6 +216,7 @@ impl TaskManager {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::task::Status;
     use std::fs::{read_dir, remove_dir_all};
@@ -246,7 +268,7 @@ mod tests {
                 status: Status::Pending,
                 cmd: "wwt".to_string(),
                 test: true,
-                timestamp: std::time::SystemTime::now(),
+                timestamp: Local::now(),
             };
             manager.submit_task(task).unwrap();
         }
@@ -271,7 +293,7 @@ mod tests {
                 status: Status::Pending,
                 cmd: format!("./run_test/{}", i),
                 test: true,
-                timestamp: std::time::SystemTime::now(),
+                timestamp: Local::now(),
             };
             manager.submit_task(task).unwrap();
         }

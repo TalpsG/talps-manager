@@ -97,9 +97,9 @@ impl TalpsApiServer for TalpsApiImpl {
         }
     }
     async fn stop(&self) -> RpcResult<String> {
-        let ret = self.manager.run();
+        let ret = self.manager.stop();
         match ret {
-            Ok(_) => Ok("Start to run".to_string()),
+            Ok(_) => Ok("Stop".to_string()),
             Err(e) => Ok(e.to_string()),
         }
     }

@@ -112,6 +112,7 @@ impl TaskManager {
             test: false,
             timestamp: Local::now(),
         };
+        self.task_id.fetch_add(1, Ordering::AcqRel);
         self.submit_task(task)
     }
     pub fn len(&self) -> usize {
@@ -167,14 +168,14 @@ impl TaskManager {
             .create(true)
             .write(true)
             .truncate(true)
-            .open(Path::new(&(output_path.clone()+"_STDOUT")))?;
+            .open(Path::new(&(output_path.clone() + "_STDOUT")))?;
         let mut stderr_file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(Path::new(&(output_path+"_ERR")))?;
+            .open(Path::new(&(output_path + "_ERR")))?;
         let mut child = Command::new("cmd")
-        // just for windows platform to output utf8 coded content
+            // just for windows platform to output utf8 coded content
             .args(["/C", &format!("chcp 65001 > NUL && {}", &task.cmd)])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
